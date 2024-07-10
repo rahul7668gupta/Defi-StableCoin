@@ -1,3 +1,15 @@
+## Defi StableCoin
+### Features
+- Relative Stability - Anchored or Pegged -> $1
+  - Price Feed -> Chainlik Price Feed
+  - Oracle -> Chainlink Oracle
+  - FUnction to exchange ETH and BTC to $$$
+- Stablility Mechanism for Minting - Algortihmic -> Decentralised Stablecoin (No centralised entity)
+  - People can mint stablecoin only with enough collateral
+- Collateral Type - Exogenous (Crypto)
+  - wETH
+  - wBTC
+
 ## Foundry
 
 **Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
