@@ -29,8 +29,11 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__TokenIsNotAllowed();
     error DSCEngine__AddressArrayLengthMismatch();
     error DSCEngine__CollateralTranferFailed();
-    error DSC_Engine__BrokenHealthFactor(uint256 userHealthFactor);
+    error DSCEngine__BreaksHealthFactor(uint256 userHealthFactor);
     error DSCEngine__DSCMintFailed();
+    error DSCEngine__DSCTransferFailed();
+    error DSCEngine__HealthFactorOk();
+    error DSCEngine__HealthFactorNotImproved();
 
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
@@ -45,12 +48,14 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
     uint256 private constant COLLATERALISATION_THRESHOLD_FACTOR = 2; // 200% overcollateralised or 2x collateral min needed
-    uint256 private constant MIN_HEALTH_FACTOR = 1;
+    uint256 private constant MIN_HEALTH_FACTOR = 1e18;
+    uint256 private constant BONUS_PERCENT = 10; // 10% liquidation bonus
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
     event CollateralDeposited(address indexed user, address indexed token, uint256 indexed amount);
+    event CollateralRedeemed(address indexed from, address indexed to, address indexed token, uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
                                MODIFIERS
@@ -93,6 +98,12 @@ contract DSCEngine is ReentrancyGuard {
     /*//////////////////////////////////////////////////////////////
                            EXTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
+    /**
+     * @dev this function deposits collateral and then mints dsc token to the caller
+     * @param tokenCollateralAddress collateral token address to be deposited
+     * @param amountCollateral amount of collateral token to be deposited
+     * @param amountDSCMint amount of dsc to be minted
+     */
     function depositCollateralAndMintDSC(
         address tokenCollateralAddress,
         uint256 amountCollateral,
@@ -102,12 +113,87 @@ contract DSCEngine is ReentrancyGuard {
         mintDSC(amountDSCMint);
     }
 
-    function redeemCollateralForDSC() external {}
+    /**
+     * @dev this function burns dsc first and then redeems collateral token
+     * @param tokenCollateralAddress collateral token address to be redeemed
+     * @param amountCollateral amount of collateral tokens to be redeemed
+     * @param amountDSCBurn amount of dsc to burn against redemption
+     */
+    function redeemCollateralForDSC(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountDSCBurn)
+        external
+    {
+        // burn the DSC from user
+        burnDSC(amountDSCBurn);
+        // redeem user collateral
+        redeemCollateral(tokenCollateralAddress, amountCollateral);
+    }
 
-    function redeemCollatral() external {}
-    function burnDSC() external {}
+    // decrement the deposited collateral amount for the given token and user
+    // emit collateral redeemed
+    // transfer collateral to user
+    // revert if health factor is broken
+    function redeemCollateral(address tokenCollateralAddress, uint256 amount)
+        public
+        isAllowedToken(tokenCollateralAddress)
+        amountNonZero(amount)
+        nonReentrant
+    {
+        _redeemCollateral(tokenCollateralAddress, amount, msg.sender, msg.sender);
+    }
 
-    function liquidateDSC() external {}
+    function burnDSC(uint256 amount) public {
+        // reduce debt for caller and burn their dsc
+        _burnDSC(msg.sender, msg.sender, amount);
+        // revert if health factor is broken
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
+
+    /**
+     * @notice liquidate the user if health factor is broken
+     * @notice liquidation is done by burning the DSC tokens of the user
+     * @notice liquidation is done by redeeming the collateral of the user
+     * eg: user A submitted $1500 1ETH for $500 DSC = health factor of 1.5
+     * if price of ETH tanks to $900, users health factor goes to 0.9 < 1
+     * user B can come in and liquidate user A and is incentivised to do so
+     * user B can improve user A's health factor by burning $500 DSC and take $900 ETH
+     * this incentivises user B to make money
+     * @notice on know bug is when no one liquidate's user A and the price of ETH falls below $500
+     * it will not be worth the liquidation for user B
+     * @notice can only liquidate when userA's health factor is below MIN_HEALTH_FACTOR
+     * @notice can liquidate partially
+     * @notice you will get liquidation bonus for executing liquidations
+     * @notice this protocol needs to be 200% or 2x overcollateralised for the system to work
+     * @notice Follows CEI
+     */
+    function liquidateDSC(address tokenCollateralAddress, address user, uint256 debtToBurn)
+        external
+        isAllowedToken(tokenCollateralAddress)
+        amountNonZero(debtToBurn)
+        nonReentrant
+    {
+        // verify if user is liquidatable (health factor < 1, else revert)
+        uint256 startHealthFactor = _healthFactor(user);
+        if (startHealthFactor >= MIN_HEALTH_FACTOR) {
+            revert DSCEngine__HealthFactorOk();
+        }
+        // get the collateral price of USD in collateral token value
+        uint256 collateralToRedeemForLiquidation = getCollateralTokenAmountForUsd(tokenCollateralAddress, debtToBurn);
+        // TODO: check fo insolvency before adding bonus
+        // eg: if collateral in eth is 0.66ETH
+        // bonus will be 10% of 0.66ETH = 0.066ETH
+        uint256 bonusCollateral = collateralToRedeemForLiquidation / BONUS_PERCENT;
+        // now totalcollateral = 0.66+0.066ETH
+        collateralToRedeemForLiquidation += bonusCollateral;
+        // redeem the collateral and burn the dsc
+        _redeemCollateral(tokenCollateralAddress, debtToBurn, user, msg.sender);
+        // reduce debt for user and burn msg.sender dsc
+        _burnDSC(user, msg.sender, debtToBurn);
+        uint256 endHealthFactor = _healthFactor(user);
+        if (endHealthFactor <= startHealthFactor) {
+            revert DSCEngine__HealthFactorNotImproved();
+        }
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     /**
      * @notice follows CEI pattern
@@ -146,14 +232,44 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /*//////////////////////////////////////////////////////////////
-                          EXTERNAL VIEW FUNCTIONS
-    //////////////////////////////////////////////////////////////*/
-
-    function getHealthFactor(address user) external view {}
-
-    /*//////////////////////////////////////////////////////////////
                      PRIVATE AND INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice this function should only be called from funcs which check health factor
+     * @param debtPayer burn dsc from the debt payer
+     * @param reduceDebtFor reduce debt for this adddress
+     * @param amount amount of debt to reduce
+     */
+    function _burnDSC(address debtPayer, address reduceDebtFor, uint256 amount) private {
+        // reduce debt for this userA
+        s_dscMinted[reduceDebtFor] -= amount;
+        // burn dsc from this userB
+        bool success = IERC20(i_dscToken).transferFrom(debtPayer, address(this), amount);
+        // assert success
+        if (!success) {
+            revert DSCEngine__DSCTransferFailed();
+        }
+        // burn dsc from this address
+        i_dscToken.burn(amount);
+    }
+
+    /**
+     * @notice this function redeems collateral from address and sends to address
+     * @notice this func should only be called from functions which check health factors
+     * @param tokenCollateralAddress collateral token address to be redeemed
+     * @param amount amount of collateral token to be redeemed
+     * @param from redeem collateral from this address
+     * @param to send the redeemed collateral to this address
+     */
+    function _redeemCollateral(address tokenCollateralAddress, uint256 amount, address from, address to) private {
+        s_collateralDeposited[from][tokenCollateralAddress] -= amount;
+        emit CollateralRedeemed(from, to, tokenCollateralAddress, amount);
+        bool success = IERC20(tokenCollateralAddress).transfer(to, amount);
+        if (!success) {
+            revert DSCEngine__CollateralTranferFailed();
+        }
+    }
 
     function _getAccountInfo(address user)
         private
@@ -171,6 +287,10 @@ contract DSCEngine is ReentrancyGuard {
      */
     function _healthFactor(address user) private view returns (uint256 healthFactor) {
         (uint256 dscMinted, uint256 collateralValue) = _getAccountInfo(user);
+        if (dscMinted <= 0) {
+            // ensuring divison by 0 doesn't happen
+            return 0;
+        }
         // dsc minted and collateralValue are in 1e18 multiple
         uint256 collateralAdjustedForThreshold = collateralValue / COLLATERALISATION_THRESHOLD_FACTOR;
         // collateralAdjustedForThreshold = ($1000 Collateral Value / 2) = $500
@@ -189,13 +309,39 @@ contract DSCEngine is ReentrancyGuard {
     function _revertIfHealthFactorIsBroken(address user) internal view {
         uint256 userHealthFactor = _healthFactor(user);
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
-            revert DSC_Engine__BrokenHealthFactor(userHealthFactor);
+            revert DSCEngine__BreaksHealthFactor(userHealthFactor);
         }
     }
 
     /*//////////////////////////////////////////////////////////////
                    PUBLIC AND EXTERNAL VIEW FUNCTIONS
     //////////////////////////////////////////////////////////////*/
+
+    function getCollateralTokenAmountForUsd(address collateral, uint256 usdAmount)
+        public
+        view
+        returns (uint256 value)
+    {
+        // get price of collateral token in usd
+        // 1ETH - $3000 -> collateralToRedeem -> 3000/usdAmount
+        // get collateral value in usd
+        address priceFeed = s_tokenPriceFeeds[collateral];
+        (
+            /* uint80 roundID */
+            ,
+            int256 answer,
+            /*uint startedAt*/
+            ,
+            /*uint timeStamp*/
+            ,
+            /*uint80 answeredInRound*/
+        ) = AggregatorV3Interface(priceFeed).latestRoundData();
+        uint256 price = uint256(answer) * ADDITIONAL_FEED_PRECISION;
+        // collateral token in usd = usdAmount * 1e18 / price
+        // eg: price = $1500, usdAmount = $1000, collateral value = 1000/1500 = 0.66ETH
+        return (usdAmount * PRECISION) / price;
+    }
+
     function getCollateralValue(address user) public view returns (uint256 value) {
         // for this user, get the total collateral value for all the collateral tokens
         address[] memory collateralTokens = s_collateralTokens;
@@ -226,5 +372,13 @@ contract DSCEngine is ReentrancyGuard {
         priceForAmount = (uint256(answer) * ADDITIONAL_FEED_PRECISION * amount) / PRECISION;
         // 1e10 * 3000 * 1e8
         // 3000 * 1e18
+    }
+
+    function getHealthFactor(address user) external view returns (uint256) {
+        return _healthFactor(user);
+    }
+
+    function getAccountInfo(address user) public view returns (uint256 totalDSCMinted, uint256 totalCollateralValue) {
+        (totalDSCMinted, totalCollateralValue) = _getAccountInfo(user);
     }
 }
