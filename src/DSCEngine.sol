@@ -32,8 +32,8 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__BreaksHealthFactor(uint256 userHealthFactor);
     error DSCEngine__DSCMintFailed();
     error DSCEngine__DSCTransferFailed();
-    error DSCEngine__HealthFactorOk();
-    error DSCEngine__HealthFactorNotImproved();
+    error DSCEngine__HealthFactorOk(uint256 healthFactor);
+    error DSCEngine__HealthFactorNotImproved(uint256 healthFactor);
 
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
@@ -128,10 +128,11 @@ contract DSCEngine is ReentrancyGuard {
         redeemCollateral(tokenCollateralAddress, amountCollateral);
     }
 
-    // decrement the deposited collateral amount for the given token and user
-    // emit collateral redeemed
-    // transfer collateral to user
-    // revert if health factor is broken
+    /**
+     * @dev this function redeems collateral to caller and does health factor check
+     * @param tokenCollateralAddress collateral token address
+     * @param amount collateral token amount to be redeemed
+     */
     function redeemCollateral(address tokenCollateralAddress, uint256 amount)
         public
         isAllowedToken(tokenCollateralAddress)
@@ -139,9 +140,10 @@ contract DSCEngine is ReentrancyGuard {
         nonReentrant
     {
         _redeemCollateral(tokenCollateralAddress, amount, msg.sender, msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
-    function burnDSC(uint256 amount) public {
+    function burnDSC(uint256 amount) public amountNonZero(amount) nonReentrant {
         // reduce debt for caller and burn their dsc
         _burnDSC(msg.sender, msg.sender, amount);
         // revert if health factor is broken
@@ -164,6 +166,9 @@ contract DSCEngine is ReentrancyGuard {
      * @notice you will get liquidation bonus for executing liquidations
      * @notice this protocol needs to be 200% or 2x overcollateralised for the system to work
      * @notice Follows CEI
+     * @param tokenCollateralAddress token collateral address for which the user below will get liquidated
+     * @param user user who is getting liquidated
+     * @param debtToBurn amount of debt to burn in usd
      */
     function liquidateDSC(address tokenCollateralAddress, address user, uint256 debtToBurn)
         external
@@ -174,7 +179,7 @@ contract DSCEngine is ReentrancyGuard {
         // verify if user is liquidatable (health factor < 1, else revert)
         uint256 startHealthFactor = _healthFactor(user);
         if (startHealthFactor >= MIN_HEALTH_FACTOR) {
-            revert DSCEngine__HealthFactorOk();
+            revert DSCEngine__HealthFactorOk(startHealthFactor);
         }
         // get the collateral price of USD in collateral token value
         uint256 collateralToRedeemForLiquidation = getCollateralTokenAmountForUsd(tokenCollateralAddress, debtToBurn);
@@ -185,12 +190,12 @@ contract DSCEngine is ReentrancyGuard {
         // now totalcollateral = 0.66+0.066ETH
         collateralToRedeemForLiquidation += bonusCollateral;
         // redeem the collateral and burn the dsc
-        _redeemCollateral(tokenCollateralAddress, debtToBurn, user, msg.sender);
+        _redeemCollateral(tokenCollateralAddress, collateralToRedeemForLiquidation, user, msg.sender);
         // reduce debt for user and burn msg.sender dsc
-        _burnDSC(user, msg.sender, debtToBurn);
+        _burnDSC(msg.sender, user, debtToBurn);
         uint256 endHealthFactor = _healthFactor(user);
         if (endHealthFactor <= startHealthFactor) {
-            revert DSCEngine__HealthFactorNotImproved();
+            revert DSCEngine__HealthFactorNotImproved(endHealthFactor);
         }
         _revertIfHealthFactorIsBroken(msg.sender);
     }
@@ -236,6 +241,7 @@ contract DSCEngine is ReentrancyGuard {
     //////////////////////////////////////////////////////////////*/
 
     /**
+     * @notice this function reduces debt of the reduceDebtFor address and burns dsc of debtPayer address
      * @notice this function should only be called from funcs which check health factor
      * @param debtPayer burn dsc from the debt payer
      * @param reduceDebtFor reduce debt for this adddress
@@ -287,9 +293,9 @@ contract DSCEngine is ReentrancyGuard {
      */
     function _healthFactor(address user) private view returns (uint256 healthFactor) {
         (uint256 dscMinted, uint256 collateralValue) = _getAccountInfo(user);
-        if (dscMinted <= 0) {
-            // ensuring divison by 0 doesn't happen
-            return 0;
+        if (dscMinted == 0) {
+            // ensuring divison by 0 doesn't happen if user burnt all dsc or didn't mint any
+            return type(uint256).max;
         }
         // dsc minted and collateralValue are in 1e18 multiple
         uint256 collateralAdjustedForThreshold = collateralValue / COLLATERALISATION_THRESHOLD_FACTOR;
