@@ -86,9 +86,87 @@ contract DSCEngineTest is Test {
                  DEPOSIT COLLATERAL AND MINT DSC TESTS
     //////////////////////////////////////////////////////////////*/
 
+    function testDepositCollateralAndMintDscSuccess() external mintWethToUser(User1) {
+        vm.startPrank(User1);
+        ERC20Mock(s_wETH).approve(address(dscEngine), COLLATERAL_AMOUNT);
+        dscEngine.depositCollateralAndMintDSC(s_wETH, COLLATERAL_AMOUNT, 10000 ether); //10 weth deposit or 30k usd // 10k usd
+        vm.stopPrank();
+        (uint256 dscMinted, uint256 collateralValueInUsd) = dscEngine.getAccountInfo(User1);
+        assertEq(dscMinted, 10000 ether);
+        assertEq(collateralValueInUsd, 30000 ether);
+        assertEq(dscEngine.getHealthFactor(User1), (collateralValueInUsd * 1e18) / (dscMinted * 2));
+    }
+
+    function testDepositCollateralAndMintDscFailsIfHealthFactorBreaks() external mintWethToUser(User1) {
+        uint256 expectedHF = (COLLATERAL_AMOUNT * 3000 * 1e18) / (2 * 15001 ether);
+        vm.startPrank(User1);
+        ERC20Mock(s_wETH).approve(address(dscEngine), COLLATERAL_AMOUNT);
+        vm.expectRevert(abi.encodeWithSelector(DSCEngine.DSCEngine__BreaksHealthFactor.selector, expectedHF));
+        dscEngine.depositCollateralAndMintDSC(s_wETH, COLLATERAL_AMOUNT, 15001 ether); // 10weth ($30k) and $15001 DSC
+        vm.stopPrank();
+        (uint256 dscMinted, uint256 collateralValueInUsd) = dscEngine.getAccountInfo(User1);
+        assertEq(dscMinted, 0);
+        assertEq(collateralValueInUsd, 0);
+        assertEq(dscEngine.getHealthFactor(User1), type(uint256).max);
+    }
+
     /*//////////////////////////////////////////////////////////////
                     REDEEM COLLATERAL FOR DSC TESTS
     //////////////////////////////////////////////////////////////*/
+
+    function testRedeemCollateralForDscFailsIfAmountIsZero()
+        external
+        mintWethToUser(User1)
+        depositWethCollateral(User1)
+        mintDSC(User1, 10000 ether) //10k usd, HF = 3
+    {
+        vm.startPrank(User1);
+        vm.expectRevert(DSCEngine.DSCEngine__ZeroAmount.selector);
+        dscEngine.redeemCollateral(s_wETH, 0);
+        vm.stopPrank();
+    }
+
+    function testRedeemCollateralForDscFailsIfTokenNotAllowed()
+        external
+        mintWethToUser(User1)
+        depositWethCollateral(User1)
+        mintDSC(User1, 10000 ether) //10k usd, HF = 3
+    {
+        vm.startPrank(User1);
+        vm.expectRevert(DSCEngine.DSCEngine__TokenIsNotAllowed.selector);
+        dscEngine.redeemCollateral(address(0x01), 100 ether);
+        vm.stopPrank();
+    }
+
+    function testRedeemCollateralForDscFailsIfHealthFactorBreaks()
+        external
+        mintWethToUser(User1)
+        depositWethCollateral(User1)
+        mintDSC(User1, 10000 ether) //10k usd, HF = 3
+    {
+        uint256 expectedHF = 0;
+        vm.startPrank(User1);
+        ERC20Mock(address(dsc)).approve(address(dscEngine), 5000 ether);
+        vm.expectRevert(abi.encodeWithSelector(DSCEngine.DSCEngine__BreaksHealthFactor.selector, expectedHF));
+        dscEngine.redeemCollateralForDSC(s_wETH, 10 ether, 5000 ether);
+        vm.stopPrank();
+    }
+
+    function testRedeemCollateralForDscSuccess()
+        external
+        mintWethToUser(User1)
+        depositWethCollateral(User1)
+        mintDSC(User1, 10000 ether) //10k usd, HF = 3
+    {
+        vm.startPrank(User1);
+        ERC20Mock(address(dsc)).approve(address(dscEngine), 10000 ether);
+        dscEngine.redeemCollateralForDSC(s_wETH, 10 ether, 10000 ether);
+        vm.stopPrank();
+        (uint256 dscMinted, uint256 collateralValueInUsd) = dscEngine.getAccountInfo(User1);
+        assertEq(dscMinted, 0);
+        assertEq(collateralValueInUsd, 0);
+        assertEq(dscEngine.getHealthFactor(User1), type(uint256).max);
+    }
 
     /*//////////////////////////////////////////////////////////////
                           LIQUIDATE DSC TESTS
