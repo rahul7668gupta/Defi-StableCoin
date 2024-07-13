@@ -35,33 +35,47 @@ contract Handler is Test {
         depositedUsers.push(msg.sender);
     }
 
-    function redeemCollateral(uint256 collateralTokenSeed, uint256 collateralAmount) external {
+    function redeemCollateral(uint256 senderSeed, uint256 collateralTokenSeed, uint256 collateralAmount) external {
+        console2.log("depositedUsers.length: ", depositedUsers.length);
+        if (depositedUsers.length == 0) {
+            // no need to call as no user has deposited yet
+            return;
+        }
+        address sender = depositedUsers[senderSeed % depositedUsers.length];
+        console2.log("sender: ", sender);
         address collateralToken = _getCollateralTokenAddressFromSeed(collateralTokenSeed);
-        uint256 userCollateralTokenBalance = dscEngine.getCollateralBalanceOfUser(collateralToken, msg.sender);
+        uint256 userCollateralTokenBalance = dscEngine.getCollateralBalanceOfUser(collateralToken, sender);
+        collateralAmount = bound(collateralAmount, 0, userCollateralTokenBalance);
+        if (collateralAmount == 0) {
+            // if amount is 0, no need to proceed as amount non zero error will occur
+            return;
+        }
+        uint256 collateralAmountValueInIsd = dscEngine.getUsdValue(collateralToken, collateralAmount);
         uint256 collateralUserTokenValueInUsd = dscEngine.getUsdValue(collateralToken, userCollateralTokenBalance);
-        (uint256 dscValueInUsd,) = dscEngine.getAccountInfo(msg.sender);
+        (uint256 dscValueInUsd, uint256 collateralValueInUsd) = dscEngine.getAccountInfo(sender);
         if (dscValueInUsd == 0) {
             // if dsc value is 0, no need to proceed as it will cause panic: division or modulo by zero
             return;
         }
         // TODO: redeem token amount value in usd should be deposited value in usd - (minted dsc * 2)
+        // if redeem token value is lt the collateral token value in usd, return;
+        if (collateralValueInUsd - (dscValueInUsd * 2) < collateralAmountValueInIsd) {
+            // if the collateral value is less than the redemption value, no need to proceed
+            // this causes HF to break
+            return;
+        }
         // if redeem value is more than deposited collateral, return
         if (userCollateralTokenBalance < collateralAmount) {
             // if the collateral value is less than the redemption value, no need to proceed
             // this causes underflows
             return;
         }
-        if (collateralUserTokenValueInUsd * 1e18 / (dscValueInUsd * 2) < 1e18) {
+        if ((collateralUserTokenValueInUsd * 1e18) / (dscValueInUsd * 2) < 1e18) {
             // if the collateral value is less than half of the dsc value, no need to proceed
             // this condition shows a broken health factor
             return;
         }
-        collateralAmount = bound(collateralAmount, 0, userCollateralTokenBalance);
-        if (collateralAmount == 0) {
-            // if amount is 0, no need to proceed as amount non zero error will occur
-            return;
-        }
-        vm.startPrank(msg.sender);
+        vm.startPrank(sender);
         dscEngine.redeemCollateral(collateralToken, collateralAmount);
         vm.stopPrank();
     }
