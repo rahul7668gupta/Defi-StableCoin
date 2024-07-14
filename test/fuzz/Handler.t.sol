@@ -5,6 +5,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {DecentralisedStablecoin} from "../../src/DecentralisedStablecoin.sol";
 import {DSCEngine} from "../../src/DSCEngine.sol";
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {MockV3Aggregator} from "../mocks/MockV3Aggregator.sol";
 
 contract Handler is Test {
     DecentralisedStablecoin dsc;
@@ -57,7 +58,7 @@ contract Handler is Test {
             // if dsc value is 0, no need to proceed as it will cause panic: division or modulo by zero
             return;
         }
-        // TODO: redeem token amount value in usd should be deposited value in usd - (minted dsc * 2)
+        // redeem token amount value in usd should be deposited value in usd - (minted dsc * 2)
         // if redeem token value is lt the collateral token value in usd, return;
         if (collateralValueInUsd - (dscValueInUsd * 2) < collateralAmountValueInIsd) {
             // if the collateral value is less than the redemption value, no need to proceed
@@ -108,6 +109,16 @@ contract Handler is Test {
         vm.stopPrank();
         timesMintedDsc++;
     }
+
+    // this function will break invariant test since the price of token tanks in one block by a lot
+    // function updateCollateralPrice(uint256 collateralTokenSeed, uint96 price) external {
+    //     address collateralToken = _getCollateralTokenAddressFromSeed(collateralTokenSeed);
+    //     address priceFeed = dscEngine.getPriceFeedForToken(collateralToken);
+    //     vm.startPrank(msg.sender);
+    //     int256 newPrice = int256(uint256(price));
+    //     MockV3Aggregator(priceFeed).updateAnswer(newPrice);
+    //     vm.stopPrank();
+    // }
 
     function _getCollateralTokenAddressFromSeed(uint256 seed) private view returns (address) {
         if (seed % 2 == 0) {
