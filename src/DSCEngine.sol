@@ -6,6 +6,7 @@ import {DecentralisedStablecoin} from "./DecentralisedStablecoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {OracleLib} from "./lib/OracleLib.sol";
 /**
  * @title DSCEngine
  * @author Rahul Gupta
@@ -34,6 +35,11 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__DSCTransferFailed();
     error DSCEngine__HealthFactorOk(uint256 healthFactor);
     error DSCEngine__HealthFactorNotImproved(uint256 healthFactor);
+
+    /*//////////////////////////////////////////////////////////////
+                                 TYPES
+    //////////////////////////////////////////////////////////////*/
+    using OracleLib for AggregatorV3Interface;
 
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
@@ -341,7 +347,7 @@ contract DSCEngine is ReentrancyGuard {
             /*uint timeStamp*/
             ,
             /*uint80 answeredInRound*/
-        ) = AggregatorV3Interface(priceFeed).latestRoundData();
+        ) = AggregatorV3Interface(priceFeed).staleCheckOraclePriceData();
         uint256 price = uint256(answer) * ADDITIONAL_FEED_PRECISION;
         // collateral token in usd = usdAmount * 1e18 / price
         // eg: price = $1500, usdAmount = $1000, collateral value = 1000/1500 = 0.66ETH
@@ -372,7 +378,7 @@ contract DSCEngine is ReentrancyGuard {
             /*uint timeStamp*/
             ,
             /*uint80 answeredInRound*/
-        ) = AggregatorV3Interface(priceFeed).latestRoundData();
+        ) = AggregatorV3Interface(priceFeed).staleCheckOraclePriceData();
         // 1 ETH = $3000
         // n ETH = (3000 * 1e10 * n)/1e18 = $3000*n; (1e8 is the precision we get from price feeds, so to make it 1e18, multipoly by 1e10)
         priceForAmount = (uint256(answer) * ADDITIONAL_FEED_PRECISION * amount) / PRECISION;
@@ -386,5 +392,41 @@ contract DSCEngine is ReentrancyGuard {
 
     function getAccountInfo(address user) public view returns (uint256 totalDSCMinted, uint256 totalCollateralValue) {
         (totalDSCMinted, totalCollateralValue) = _getAccountInfo(user);
+    }
+
+    function getCollateralTokens() public view returns (address[] memory) {
+        return s_collateralTokens;
+    }
+
+    function getCollateralBalanceOfUser(address token, address user) public view returns (uint256) {
+        return s_collateralDeposited[user][token];
+    }
+
+    function getPriceFeedForToken(address token) public view returns (address) {
+        return s_tokenPriceFeeds[token];
+    }
+
+    function getAdditionalFeedPrecision() public pure returns (uint256) {
+        return ADDITIONAL_FEED_PRECISION;
+    }
+
+    function getPrecision() public pure returns (uint256) {
+        return PRECISION;
+    }
+
+    function getCollateralisationThresholdFactor() public pure returns (uint256) {
+        return COLLATERALISATION_THRESHOLD_FACTOR;
+    }
+
+    function getMinHealthFactor() public pure returns (uint256) {
+        return MIN_HEALTH_FACTOR;
+    }
+
+    function getBonusPercent() public pure returns (uint256) {
+        return BONUS_PERCENT;
+    }
+
+    function getDSCAddress() public view returns (address) {
+        return address(i_dscToken);
     }
 }
